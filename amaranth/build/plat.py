@@ -14,7 +14,7 @@ from ..hdl._ir import IOBufferInstance, Design
 from ..hdl._xfrm import DomainLowerer
 from ..lib.cdc import ResetSynchronizer
 from ..lib import io
-from ..back import rtlil, verilog
+from ..back import unnamed, rtlil, verilog
 from .res import *
 from .run import *
 
@@ -290,6 +290,9 @@ class TemplatedPlatform(Platform):
                                      .format(var, value))
             return value
 
+        def emit_unnamed():
+            return unnamed.convert_fragment(fragment, name=name, emit_src=emit_src)
+
         def emit_rtlil():
             return rtlil_text
 
@@ -399,6 +402,7 @@ class TemplatedPlatform(Platform):
             return compiled.render({
                 "name": name,
                 "platform": self,
+                "emit_unnamed": emit_unnamed,
                 "emit_rtlil": emit_rtlil,
                 "emit_verilog": emit_verilog,
                 "emit_debug_verilog": emit_debug_verilog,
