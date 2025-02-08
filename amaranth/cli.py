@@ -1,7 +1,7 @@
 import argparse
 
 from .hdl._ir import Fragment
-from .back import rtlil, cxxrtl, verilog
+from .back import unnamed, rtlil, yosys_json, cxxrtl, verilog
 from .sim import Simulator
 
 
@@ -17,8 +17,8 @@ def main_parser(parser=None):
     p_generate = p_action.add_parser("generate",
         help="generate RTLIL, Verilog or CXXRTL from the design")
     p_generate.add_argument("-t", "--type", dest="generate_type",
-        metavar="LANGUAGE", choices=["il", "cc", "v"],
-        help="generate LANGUAGE (il for RTLIL, v for Verilog, cc for CXXRTL; default: file extension of FILE, if given)")
+        metavar="LANGUAGE", choices=["uir", "il", "json", "cc", "v"],
+        help="generate LANGUAGE (uir for Unnamed IR, il for RTLIL, json for Yosys JSON, v for Verilog, cc for CXXRTL; default: file extension of FILE, if given)")
     p_generate.add_argument("--no-src", dest="emit_src", default=True, action="store_false",
         help="suppress generation of source location attributes")
     p_generate.add_argument("generate_file",
@@ -47,16 +47,24 @@ def main_runner(parser, args, design, platform=None, name="top", ports=None):
     if args.action == "generate":
         generate_type = args.generate_type
         if generate_type is None and args.generate_file:
+            if args.generate_file.name.endswith(".uir"):
+                generate_type = "il"
             if args.generate_file.name.endswith(".il"):
                 generate_type = "il"
+            if args.generate_file.name.endswith(".json"):
+                generate_type = "json"
             if args.generate_file.name.endswith(".cc"):
                 generate_type = "cc"
             if args.generate_file.name.endswith(".v"):
                 generate_type = "v"
         if generate_type is None:
             parser.error("Unable to auto-detect language, specify explicitly with -t/--type")
+        if generate_type == "uir":
+            output = unnamed.convert(design, platform=platform, name=name, ports=ports, emit_src=args.emit_src)
         if generate_type == "il":
             output = rtlil.convert(design, platform=platform, name=name, ports=ports, emit_src=args.emit_src)
+        if generate_type == "json":
+            output = yosys_json.convert(design, platform=platform, name=name, ports=ports, emit_src=args.emit_src)
         if generate_type == "cc":
             output = cxxrtl.convert(design, platform=platform, name=name, ports=ports, emit_src=args.emit_src)
         if generate_type == "v":
