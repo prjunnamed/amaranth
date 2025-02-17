@@ -296,15 +296,13 @@ class Emitter:
                     port = self.netlist.cells[port_index]
                     if isinstance(port, (_nir.SyncReadPort, _nir.AsyncReadPort)):
                         width += port.width
-                ucell = self.reserve_ucell(width)
-                offset = 0
+                self.cell_map[cell_index] = self.reserve_ucell(0)
                 for port_index in self.memory_ports[cell_index]:
                     port = self.netlist.cells[port_index]
                     if isinstance(port, (_nir.SyncReadPort, _nir.AsyncReadPort)):
                         data = _nir.Value(_nir.Net.from_cell(port_index, bit) for bit in range(port.width))
-                        self.assign_nets(data, self.ucell_output(ucell)[offset:offset + port.width])
-                        offset += port.width
-                self.cell_map[cell_index] = ucell
+                        self.cell_map[port_index] = ucell = self.reserve_ucell(port.width)
+                        self.assign_nets(data, self.ucell_output(ucell))
             elif isinstance(cell, (_nir.SyncWritePort, _nir.SyncReadPort, _nir.AsyncReadPort)):
                 pass
             elif isinstance(cell, _nir.Instance):
@@ -468,7 +466,7 @@ class Emitter:
                 for name, value in cell.attributes.items():
                     meta_parts.append(self.emit_attr(name, value))
                 meta = self.emit_meta_set(*meta_parts)
-                self.emit_ucell(ucell, "memory", f"depth=#{cell.depth}", f"width=#{cell.width}", f"!{meta}", "{")
+                self.emit_ucell(ucell, "memory", f"depth=#{cell.depth}", f"width=#{cell.width}", f"!{meta}", "{", has_width=False)
                 for init in cell.init:
                     self.lines.append(f"  init {init:0{cell.width}b}")
                 write_port_indices = []
@@ -488,8 +486,10 @@ class Emitter:
                             clk = self.uvalue_str(self.value(port.clk))
                         self.lines.append(f"  write addr={addr} data={data} mask={mask} clk={clk}")
                     elif isinstance(port, _nir.AsyncReadPort):
-                        self.lines.append(f"  read addr={addr} width=#{port.width}")
+                        port_ucell = self.cell_map[port_index]
+                        self.lines.append(f"  %{port_ucell}:{port.width} = read addr={addr}")
                     elif isinstance(port, _nir.SyncReadPort):
+                        port_ucell = self.cell_map[port_index]
                         if port.clk_edge == "neg":
                             clk = "!" + self.uvalue_str(self.value(port.clk))
                         else:
@@ -505,7 +505,7 @@ class Emitter:
                             else:
                                 relations.append("undef")
                         relations = " ".join(relations)
-                        self.lines.append(f"  read addr={addr} width=#{port.width} clk={clk} en={en} [{relations}]")
+                        self.lines.append(f"  %{port_ucell}:{port.width} = read addr={addr} clk={clk} en={en} [{relations}]")
                     else:
                         assert False # :nocov:
                 self.lines.append("}")
