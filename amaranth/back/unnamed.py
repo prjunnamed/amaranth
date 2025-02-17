@@ -36,7 +36,7 @@ class Emitter:
         self.ucell_width = {}
         self.memory_ports = {}
         self.next_ucell = 0
-        self.next_meta = 1
+        self.next_meta = 0
         self.module_meta = {}
         self.src_loc_meta = {}
         self.set_meta = {}
