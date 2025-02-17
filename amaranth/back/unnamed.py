@@ -464,6 +464,7 @@ class Emitter:
                     self.emit_ucell(ucell, "dff", cell.data, clk, arst, init, meta=meta)
             elif isinstance(cell, _nir.Memory):
                 ucell = self.cell_map[cell_index]
+                meta_parts.append(self.emit_ident(cell.name, self.module_meta[cell.module_idx]))
                 for name, value in cell.attributes.items():
                     meta_parts.append(self.emit_attr(name, value))
                 meta = self.emit_meta_set(*meta_parts)
@@ -512,6 +513,7 @@ class Emitter:
                 pass
             elif isinstance(cell, _nir.Instance):
                 ucell = self.cell_map[cell_index]
+                meta_parts.append(self.emit_ident(cell.name, self.module_meta[cell.module_idx]))
                 for name, value in cell.attributes.items():
                     meta_parts.append(self.emit_attr(name, value))
                 meta = self.emit_meta_set(*meta_parts)
