@@ -36,6 +36,12 @@ class Emitter:
         self.ucell_width = {}
         self.memory_ports = {}
         self.next_ucell = 0
+        self.next_meta = 1
+        self.module_meta = {}
+        self.src_loc_meta = {}
+        self.set_meta = {}
+        self.ident_meta = {}
+        self.attr_meta = {}
 
     def escape_string(self, s: str):
         chars = re.sub(r'[^"\x20-\x7e]+', lambda m: re.sub(r'(..)', r'\\\1', m[0].encode().hex()), s)
@@ -113,7 +119,7 @@ class Emitter:
         else:
             self.lines.append(f"%{ucell}:_ = {text}")
 
-    def emit_ucell(self, ucell, opcode, *args, has_width=True):
+    def emit_ucell(self, ucell, opcode, *args, has_width=True, meta=None):
         args = [
             self.uvalue_str(self.value(arg)) if isinstance(arg, (_nir.Net, _nir.Value)) else
             self.iovalue_str(arg) if isinstance(arg, (_nir.IONet, _nir.IOValue)) else
@@ -122,12 +128,78 @@ class Emitter:
             self.uvalue_str(arg)
             for arg in args
         ]
+        if meta is not None:
+            args.append(f"!{meta}")
         self.emit_ucell_raw(ucell, " ".join([opcode, *args]), has_width=has_width)
+
+    def emit_meta(self, opcode, *args):
+        index = self.next_meta
+        self.next_meta += 1
+        rest = " ".join([opcode, *args])
+        self.lines.append(f"!{index} = {rest}")
+        return index
+
+    def emit_src_loc(self, src_loc):
+        if src_loc is None:
+            return None
+        if src_loc in self.src_loc_meta:
+            return self.src_loc_meta[src_loc]
+        fname, line = src_loc
+        index = self.emit_meta("source", self.escape_string(fname), f"(#{line} #0)", f"(#{line} #0)")
+        self.src_loc_meta[src_loc] = index
+        return index
+
+    def emit_ident(self, ident, scope):
+        if (ident, scope) in self.ident_meta:
+            return self.ident_meta[ident, scope]
+        index = self.emit_meta("ident", self.escape_string(ident), f"in=!{scope}")
+        self.ident_meta[ident, scope] = index
+        return index
+
+    def emit_meta_set(self, *meta):
+        if len(meta) == 1:
+            meta, = meta
+            return meta
+        meta = tuple(sorted(meta))
+        if meta in self.set_meta:
+            return self.set_meta[meta]
+        meta_str = " ".join(f"!{index}" for index in meta)
+        index = self.emit_meta(f"{{ {meta_str} }}")
+        self.set_meta[meta] = index
+        return index
+
+    def emit_attr(self, name, value):
+        value = self.param_value(value)
+        if (name, value) in self.attr_meta:
+            return self.attr_meta[name, value]
+        index = self.emit_meta("attr", self.escape_string(name), value)
+        self.attr_meta[name, value] = index
+        return index
+
+    def param_value(self, value):
+        if type(value) is int:
+            return f"#{value}"
+        elif type(value) is _ast.Const:
+            return f"{value.value:0{len(value)}b}"
+        elif type(value) is str:
+            return self.escape_string(value)
+        else:
+            raise TypeError(f"cannot handle parameter {value!r}")
 
     def emit(self):
         # emit IOs
         for port in self.netlist.io_ports:
             self.lines.append(f"&{self.escape_string(port.name)}:{len(port)}")
+
+        # emit scope metadata
+        for index, module in enumerate(self.netlist.modules):
+            args = [self.escape_string(module.name[-1])]
+            if module.parent is not None:
+                args.append(f"in=!{self.module_meta[module.parent]}")
+            if module.src_loc is not None:
+                src_loc = self.emit_src_loc(module.src_loc)
+                args.append(f"src=!{src_loc}")
+            self.module_meta[index] = self.emit_meta("scope", *args)
 
         # emit inputs
         for (name, (start, width)) in self.netlist.top.ports_i.items():
@@ -254,36 +326,40 @@ class Emitter:
 
         # emit cells
         for cell_index, cell in enumerate(self.netlist.cells):
+            meta_parts = [self.module_meta[cell.module_idx]]
+            if cell.src_loc is not None:
+                meta_parts.append(self.emit_src_loc(cell.src_loc))
+            meta = self.emit_meta_set(*meta_parts)
             if isinstance(cell, _nir.Top):
                 pass
             elif isinstance(cell, _nir.Operator):
                 if cell.operator == '~' and len(cell.inputs) == 1:
                     ucell = self.cell_map[cell_index]
-                    self.emit_ucell(ucell, "not", cell.inputs[0])
+                    self.emit_ucell(ucell, "not", cell.inputs[0], meta=meta)
                 elif cell.operator == '-' and len(cell.inputs) == 1:
                     (ucell_not, ucell_adc) = self.cell_map[cell_index]
-                    self.emit_ucell(ucell_not, "not", cell.inputs[0])
-                    self.emit_ucell(ucell_adc, "adc", self.ucell_output(ucell_not), self.uzero(cell.width), "1")
+                    self.emit_ucell(ucell_not, "not", cell.inputs[0], meta=meta)
+                    self.emit_ucell(ucell_adc, "adc", self.ucell_output(ucell_not), self.uzero(cell.width), "1", meta=meta)
                 elif cell.operator in ('b', 'r|') and len(cell.inputs) == 1:
                     (ucell_eq, ucell_not) = self.cell_map[cell_index]
-                    self.emit_ucell(ucell_eq, "eq", cell.inputs[0], self.uzero(len(cell.inputs[0])))
-                    self.emit_ucell(ucell_not, "not", self.ucell_output(ucell_eq))
+                    self.emit_ucell(ucell_eq, "eq", cell.inputs[0], self.uzero(len(cell.inputs[0])), meta=meta)
+                    self.emit_ucell(ucell_not, "not", self.ucell_output(ucell_eq), meta=meta)
                 elif cell.operator == 'r&' and len(cell.inputs) == 1:
                     ucell = self.cell_map[cell_index]
-                    self.emit_ucell(ucell, "eq", cell.inputs[0], self.uones(len(cell.inputs[0])))
+                    self.emit_ucell(ucell, "eq", cell.inputs[0], self.uones(len(cell.inputs[0])), meta=meta)
                 elif cell.operator == 'r^' and len(cell.inputs) == 1:
                     prev = self.uzero(1)
                     ucells = self.cell_map[cell_index]
                     for index, ucell in enumerate(ucells):
-                        self.emit_ucell(ucell, "xor", prev, cell.inputs[0][index])
+                        self.emit_ucell(ucell, "xor", prev, cell.inputs[0][index], meta=meta)
                         prev = self.ucell_output(ucell)
                 elif cell.operator == '+' and len(cell.inputs) == 2:
                     ucell = self.cell_map[cell_index]
-                    self.emit_ucell(ucell, "adc", cell.inputs[0], cell.inputs[1], "0")
+                    self.emit_ucell(ucell, "adc", cell.inputs[0], cell.inputs[1], "0", meta=meta)
                 elif cell.operator == '-' and len(cell.inputs) == 2:
                     (ucell_not, ucell_adc) = self.cell_map[cell_index]
-                    self.emit_ucell(ucell_not, "not", cell.inputs[1])
-                    self.emit_ucell(ucell_adc, "adc", cell.inputs[0], self.ucell_output(ucell_not), "1")
+                    self.emit_ucell(ucell_not, "not", cell.inputs[1], meta=meta)
+                    self.emit_ucell(ucell_adc, "adc", cell.inputs[0], self.ucell_output(ucell_not), "1", meta=meta)
                 elif cell.operator in ('*', '&', '^', '|', '==', 'u<', 'u>', 's<', 's>') and len(cell.inputs) == 2:
                     opcode = {
                         '*': "mul",
@@ -298,9 +374,9 @@ class Emitter:
                     }[cell.operator]
                     ucell = self.cell_map[cell_index]
                     if cell.operator in ('u>', 's>'):
-                        self.emit_ucell(ucell, opcode, cell.inputs[1], cell.inputs[0])
+                        self.emit_ucell(ucell, opcode, cell.inputs[1], cell.inputs[0], meta=meta)
                     else:
-                        self.emit_ucell(ucell, opcode, cell.inputs[0], cell.inputs[1])
+                        self.emit_ucell(ucell, opcode, cell.inputs[0], cell.inputs[1], meta=meta)
                 elif cell.operator in ('u//', 's//', 'u%', 's%') and len(cell.inputs) == 2:
                     opcode = {
                         'u//': "udiv",
@@ -309,9 +385,9 @@ class Emitter:
                         's%': "smodfloor",
                     }[cell.operator]
                     (ucell_eq, ucell_div, ucell_mux) = self.cell_map[cell_index]
-                    self.emit_ucell(ucell_eq, "eq", self.uzero(cell.width), cell.inputs[1])
-                    self.emit_ucell(ucell_div, opcode, cell.inputs[0], cell.inputs[1])
-                    self.emit_ucell(ucell_mux, "mux", self.ucell_output(ucell_eq), self.uzero(cell.width), self.ucell_output(ucell_div))
+                    self.emit_ucell(ucell_eq, "eq", self.uzero(cell.width), cell.inputs[1], meta=meta)
+                    self.emit_ucell(ucell_div, opcode, cell.inputs[0], cell.inputs[1], meta=meta)
+                    self.emit_ucell(ucell_mux, "mux", self.ucell_output(ucell_eq), self.uzero(cell.width), self.ucell_output(ucell_div), meta=meta)
                 elif cell.operator in ('<<', 'u>>', 's>>') and len(cell.inputs) == 2:
                     opcode = {
                         '<<': "shl",
@@ -319,7 +395,7 @@ class Emitter:
                         's>>': "sshr",
                     }[cell.operator]
                     ucell = self.cell_map[cell_index]
-                    self.emit_ucell(ucell, opcode, cell.inputs[0], cell.inputs[1], 1)
+                    self.emit_ucell(ucell, opcode, cell.inputs[0], cell.inputs[1], 1, meta=meta)
                 elif cell.operator in ('!=', 'u<=', 'u>=', 's<=', 's>=') and len(cell.inputs) == 2:
                     opcode = {
                         '!=': "eq",
@@ -330,13 +406,13 @@ class Emitter:
                     }[cell.operator]
                     (ucell_cmp, ucell_not) = self.cell_map[cell_index]
                     if cell.operator in ('u<=', 's<='):
-                        self.emit_ucell(ucell_cmp, opcode, cell.inputs[1], cell.inputs[0])
+                        self.emit_ucell(ucell_cmp, opcode, cell.inputs[1], cell.inputs[0], meta=meta)
                     else:
-                        self.emit_ucell(ucell_cmp, opcode, cell.inputs[0], cell.inputs[1])
-                    self.emit_ucell(ucell_not, "not", self.ucell_output(ucell_cmp))
+                        self.emit_ucell(ucell_cmp, opcode, cell.inputs[0], cell.inputs[1], meta=meta)
+                    self.emit_ucell(ucell_not, "not", self.ucell_output(ucell_cmp), meta=meta)
                 elif cell.operator == 'm' and len(cell.inputs) == 3:
                     ucell = self.cell_map[cell_index]
-                    self.emit_ucell(ucell, "mux", cell.inputs[0], cell.inputs[1], cell.inputs[2])
+                    self.emit_ucell(ucell, "mux", cell.inputs[0], cell.inputs[1], cell.inputs[2], meta=meta)
                 else:
                     assert False # :nocov:
             elif isinstance(cell, _nir.Part):
@@ -348,11 +424,11 @@ class Emitter:
                     else:
                         value += self.uzero(cell.width - len(value))
                 opcode = "sshr" if cell.value_signed else "ushr"
-                self.emit_ucell(ucell, opcode, value, cell.offset, cell.stride)
+                self.emit_ucell(ucell, opcode, value, cell.offset, cell.stride, meta=meta)
             elif isinstance(cell, _nir.Match):
                 ucell = self.cell_map[cell_index]
                 en = "en=" + self.uvalue_str(self.value(cell.en))
-                self.emit_ucell(ucell, "match", en, cell.value, "{")
+                self.emit_ucell(ucell, "match", en, cell.value, f"!{meta}", "{")
                 for alternates in cell.patterns:
                     alternates = [pattern.replace('-', 'X') for pattern in alternates]
                     if len(alternates) == 1:
@@ -363,29 +439,35 @@ class Emitter:
             elif isinstance(cell, _nir.AssignmentList):
                 ucells = self.cell_map[cell_index]
                 if len(cell.assignments) == 0:
-                    self.emit_ucell(ucells[0], "buf", cell.default)
+                    self.emit_ucell(ucells[0], "buf", cell.default, meta=meta)
                 else:
                     prev = self.value(cell.default)
                     for assignment, ucell in zip(cell.assignments, ucells):
                         en = "en=" + self.uvalue_str(self.value(assignment.cond))
                         at = f"at=#{assignment.start}"
-                        self.emit_ucell(ucell, "assign", en, prev, assignment.value, at)
+                        self.emit_ucell(ucell, "assign", en, prev, assignment.value, at, meta=meta)
                         prev = self.ucell_output(ucell)
             elif isinstance(cell, _nir.FlipFlop):
                 ucell = self.cell_map[cell_index]
+                for name, value in cell.attributes.items():
+                    meta_parts.append(self.emit_attr(name, value))
+                meta = self.emit_meta_set(*meta_parts)
                 if cell.clk_edge == "pos":
                     clk = "clk=" + self.uvalue_str(self.value(cell.clk))
                 else:
                     clk = "clk=!" + self.uvalue_str(self.value(cell.clk))
                 init = f"init={cell.init:0{len(cell.data)}b}"
                 if cell.arst == _nir.Net.from_const(0):
-                    self.emit_ucell(ucell, "dff", cell.data, clk, init)
+                    self.emit_ucell(ucell, "dff", cell.data, clk, init, meta=meta)
                 else:
                     arst = "arst=" + self.uvalue_str(self.value(cell.arst))
-                    self.emit_ucell(ucell, "dff", cell.data, clk, arst, init)
+                    self.emit_ucell(ucell, "dff", cell.data, clk, arst, init, meta=meta)
             elif isinstance(cell, _nir.Memory):
                 ucell = self.cell_map[cell_index]
-                self.emit_ucell(ucell, "memory", f"depth=#{cell.depth}", f"width=#{cell.width}", "{")
+                for name, value in cell.attributes.items():
+                    meta_parts.append(self.emit_attr(name, value))
+                meta = self.emit_meta_set(*meta_parts)
+                self.emit_ucell(ucell, "memory", f"depth=#{cell.depth}", f"width=#{cell.width}", f"!{meta}", "{")
                 for init in cell.init:
                     self.lines.append(f"  init {init:0{cell.width}b}")
                 write_port_indices = []
@@ -430,17 +512,12 @@ class Emitter:
                 pass
             elif isinstance(cell, _nir.Instance):
                 ucell = self.cell_map[cell_index]
-                self.emit_ucell(ucell, self.escape_string(cell.type), "{", has_width=False)
+                for name, value in cell.attributes.items():
+                    meta_parts.append(self.emit_attr(name, value))
+                meta = self.emit_meta_set(*meta_parts)
+                self.emit_ucell(ucell, self.escape_string(cell.type), f"!{meta}", "{", has_width=False)
                 for name, value in cell.parameters.items():
-                    if type(value) is int:
-                        self.lines.append(f"  param {self.escape_string(name)} = #{value}")
-                    elif type(value) is _ast.Const:
-                        value = f"{value.value:0{len(value)}b}"
-                        self.lines.append(f"  param {self.escape_string(name)} = {value}")
-                    elif type(value) is str:
-                        self.lines.append(f"  param {self.escape_string(name)} = {self.escape_string(value)}")
-                    else:
-                        raise TypeError("cannot handle parameter {value!r}")
+                    self.lines.append(f"  param {self.escape_string(name)} = {self.param_value(value)}")
                 for name, value in cell.ports_i.items():
                     self.lines.append(f"  input {self.escape_string(name)}={self.uvalue_str(self.value(value))}")
                 for name, (start, width) in cell.ports_o.items():
@@ -452,7 +529,7 @@ class Emitter:
                 ucell = self.cell_map[cell_index]
                 o = "o=" + self.uvalue_str(self.value(cell.o))
                 en = "en=" + self.uvalue_str(self.value(cell.oe))
-                self.emit_ucell(ucell, "iobuf", cell.port, o, en)
+                self.emit_ucell(ucell, "iobuf", cell.port, o, en, meta=meta)
             else:
                 assert False # :nocov:
 
@@ -460,12 +537,16 @@ class Emitter:
             ucell = self.reserve_ucell(0)
             self.emit_ucell(ucell, "output", self.escape_string(name), value)
 
-        for module in self.netlist.modules:
+        for module_idx, module in enumerate(self.netlist.modules):
             for signal, name in module.signal_names.items():
                 value = self.netlist.signals[signal]
                 hier_name = " ".join(module.name + (name,))
                 ucell = self.reserve_ucell(0)
-                self.emit_ucell(ucell, "name", self.escape_string(hier_name), value)
+                meta_parts = [self.emit_ident(name, self.module_meta[module_idx])]
+                if signal.src_loc is not None:
+                    meta_parts.append(self.emit_src_loc(signal.src_loc))
+                meta = self.emit_meta_set(*meta_parts)
+                self.emit_ucell(ucell, "name", self.escape_string(hier_name), value, f"!{meta}")
 
         return "\n".join(self.lines) + "\n"
 
