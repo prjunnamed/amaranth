@@ -145,7 +145,7 @@ class Emitter:
         if src_loc in self.src_loc_meta:
             return self.src_loc_meta[src_loc]
         fname, line = src_loc
-        index = self.emit_meta("source", self.escape_string(fname), f"(#{line} #0)", f"(#{line} #0)")
+        index = self.emit_meta("source", self.escape_string(fname), f"(#{line-1} #0)", f"(#{line-1} #0)")
         self.src_loc_meta[src_loc] = index
         return index
 
