@@ -429,7 +429,7 @@ class Emitter:
                 self.emit_ucell(ucell, "match", en, cell.value, f"!{meta}", "{")
                 for alternates in cell.patterns:
                     alternates = [pattern.replace('-', 'X') for pattern in alternates]
-                    if len(alternates) == 1:
+                    if len(alternates) == 1 and len(cell.value) > 0:
                         self.lines.append("  " + alternates[0])
                     else:
                         self.lines.append("  (" + " ".join(alternates) + ")")
