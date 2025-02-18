@@ -458,8 +458,8 @@ class Emitter:
                 if cell.arst == _nir.Net.from_const(0):
                     self.emit_ucell(ucell, "dff", cell.data, clk, init, meta=meta)
                 else:
-                    clear = "clear=" + self.uvalue_str(self.value(cell.arst))
-                    self.emit_ucell(ucell, "dff", cell.data, clk, clear, init, meta=meta)
+                    clr = "clr=" + self.uvalue_str(self.value(cell.arst))
+                    self.emit_ucell(ucell, "dff", cell.data, clk, clr, init, meta=meta)
             elif isinstance(cell, _nir.Memory):
                 ucell = self.cell_map[cell_index]
                 meta_parts.append(self.emit_ident(cell.name, self.module_meta[cell.module_idx]))
