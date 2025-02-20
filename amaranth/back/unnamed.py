@@ -189,7 +189,7 @@ class Emitter:
     def emit(self):
         # emit IOs
         for port in self.netlist.io_ports:
-            self.lines.append(f"&{self.escape_string(port.name)}:{len(port)}")
+            self.lines.append(f"&{self.escape_string(port.name)}:{len(port)} = io")
 
         # emit scope metadata
         for index, module in enumerate(self.netlist.modules):
